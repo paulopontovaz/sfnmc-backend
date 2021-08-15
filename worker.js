@@ -33,8 +33,7 @@ amqp.connect('amqp://localhost', (error0, connection) => {
     if (error1) {
       throw error1;
     }
-
-    // myChannel = channel;
+    
     let queue = 'travel_recommendation_queue';
 
     channel.assertQueue(queue, {
@@ -44,16 +43,16 @@ amqp.connect('amqp://localhost', (error0, connection) => {
     console.log(" [*] Waiting for messages in %s. To exit press CTRL+C", queue);
     
     channel.consume(queue, msg => {
-      //messages.push(msg);
       console.log(" [x] Received %s", msg.content.toString());
 
       wss.clients.forEach(client => {
         if (client.readyState === WebSocket.OPEN) {
           client.send(msg.content);
+          channel.ack(msg)
         }
       })
     }, {
-      noAck: true
+      noAck: false
     });
   });
 });

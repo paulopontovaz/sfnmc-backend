@@ -17,16 +17,42 @@ app.listen(PORT, () => console.log("Server started at %s", PORT));
 
 const covidApi = "https://corona.lmao.ninja/v2/historical";
 
+//TIRAR VARIÁVEIS GLOBAIS
+let cheapestFlightDestinations = [];
+let locations = {};
+let covidData = [];
+let days = 90; 
+
+
+const getDate = (days) => {
+	const date = new Date()
+	date.setDate(date.getDate() - days)
+	let formattedDate = (date.getMonth()+1)+'/'+date.getDate()+'/'+date.getFullYear().toString().substr(-2)
+	return formattedDate
+}
+
 const getCovidHistoricalData = async (countriesName) => {
-  await axios({
-    method: "get",
-    url: `${covidApi}/${countriesName}`,
-    params: {
-      lastdays: 90,
-    },
-  }).then(function (response) {
-    console.log(response.data);
-  });
+	if (!covidData.length) {
+		await axios({
+			method: "get",
+			url: `${covidApi}/${countriesName}`,
+			params: {
+				lastdays: 90,
+			},
+		}).then(function (response) {
+				covidData = response.data
+		});
+	}
+
+	covidData.forEach((countryObject, index) => {
+		let cases_list = countryObject.timeline.cases
+		cheapestFlightDestinations[index].cases = cases_list[getDate(days)]
+		cheapestFlightDestinations[index].contamination_rate = calculate_contamination_rate(days, cases_list)
+		cheapestFlightDestinations[index].country_name = countryObject.country
+		cheapestFlightDestinations[index].flag_link = `https://www.countryflags.io/${cheapestFlightDestinations[index].countryCode}/flat/64.png`
+	})
+
+	days -= 1
 };
 
 const amadeus = new Amadeus({
@@ -34,8 +60,18 @@ const amadeus = new Amadeus({
   clientSecret: AMADEUS_CLIENT_SECRET,
 });
 
-let cheapestFlightDestinations = [];
-let locations = {};
+const calculate_contamination_rate = (days, cases_list) => {
+	// Verificar se o dia anterior existe
+	if (days == 90) {
+		return 0
+	} else {
+		const initial_value = cases_list[getDate(days+1)]
+		const final_value = cases_list[getDate(days)]
+		const contamination_rate = (final_value - initial_value) / initial_value
+	
+		return Math.round(contamination_rate * 10000) / 10000
+	}
+}
 
 const getCheapestFlightDestinations = async () => {
   try {
@@ -143,8 +179,9 @@ const sendFlightRecommendation = async () => {
         return destination.countryCode;
       })
       .join(",");
+
     getCovidHistoricalData(countriesIso);
-    // sendRecommendationsToQueue();
+    sendRecommendationsToQueue();
   }
 };
 
@@ -169,5 +206,3 @@ const Main = async () => {
 };
 
 Main();
-
-// getCovidHistoricalData();
