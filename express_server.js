@@ -23,6 +23,13 @@ let locations = {};
 let covidData = [];
 let days = 90; 
 
+app.post("/", function(req, res) {
+	const iata = req.body.iata_from
+
+	Main(iata);
+	res.sendStatus(200)
+})
+
 
 const getDate = (days) => {
 	const date = new Date()
@@ -73,12 +80,12 @@ const calculate_contamination_rate = (days, cases_list) => {
 	}
 }
 
-const getCheapestFlightDestinations = async () => {
+const getCheapestFlightDestinations = async (iata) => {
   try {
     console.log("Making an api request...");
 
     const response = await amadeus.shopping.flightDestinations.get({
-      origin: "MAD",
+      origin: iata ?? "REC",
     });
 
     const handledDestinations = await handleCheapestFlightDestinations(
@@ -169,8 +176,8 @@ const queueRecommendation = (msg) => {
   });
 };
 
-const sendFlightRecommendation = async () => {
-  await getCheapestFlightDestinations();
+const sendFlightRecommendation = async (iata) => {
+  await getCheapestFlightDestinations(iata);
 
   if (cheapestFlightDestinations.length && Object.keys(locations).length) {
     setDestinationCountryCode();
@@ -185,7 +192,7 @@ const sendFlightRecommendation = async () => {
   }
 };
 
-const Main = async () => {
+const Main = async (iata) => {
   try {
     await processLineByLine("./airports.csv", (line) => {
       const [name, iso_country, municipality, iata_code] = line.split(",");
@@ -198,11 +205,11 @@ const Main = async () => {
     });
 
     var interval = setInterval(async function () {
-      await sendFlightRecommendation();
+      await sendFlightRecommendation(iata);
     }, 15000);
   } catch (err) {
     console.error(err.statusCode);
   }
 };
 
-Main();
+
