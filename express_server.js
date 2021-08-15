@@ -1,59 +1,40 @@
+require('dotenv').config()
+
+const envVariables = process.env;
+const { AMADEUS_CLIENT_ID, AMADEUS_CLIENT_SECRET, PORT } = envVariables;
+
 const express = require("express");
 const amqp = require("amqplib/callback_api");
 const Amadeus = require("amadeus");
 const fs = require("fs");
-const csv = require("csv-parser");
 const readline = require("readline");
-const { resolve } = require("path");
-
-// const tools = require('./tools');
-
 const app = express();
+
 app.use(express.json());
-app.listen(3333, () => console.log("Server started"));
+app.listen(PORT, () => console.log("Server started at %s", PORT));
 
 const amadeus = new Amadeus({
-	clientId: "GShykh1Kr4v6H8ArbLzCjFfJuu8EZVXB",
-	clientSecret: "m84NSPakMMJVSVG3",
+	clientId: AMADEUS_CLIENT_ID,
+	clientSecret: AMADEUS_CLIENT_SECRET,
 });
 
-// let cheapestFlightDestinations = [
-//   { destinationIata: "OPO", price: "49.76", currency: "EUR" },
-//   { destinationIata: "PMI", price: "56.58", currency: "EUR" },
-//   { destinationIata: "LIS", price: "57.42", currency: "EUR" },
-//   { destinationIata: "BCN", price: "58.61", currency: "EUR" },
-//   { destinationIata: "LGW", price: "65.27", currency: "EUR" },
-//   { destinationIata: "ORY", price: "76.89", currency: "EUR" },
-//   { destinationIata: "LPA", price: "84.98", currency: "EUR" },
-//   { destinationIata: "AMS", price: "86.99", currency: "EUR" },
-//   { destinationIata: "RAK", price: "88.67", currency: "EUR" },
-//   { destinationIata: "MXP", price: "89.11", currency: "EUR" },
-//   { destinationIata: "FCO", price: "95.91", currency: "EUR" },
-//   { destinationIata: "MIA", price: "217.32", currency: "EUR" },
-//   { destinationIata: "JFK", price: "240.50", currency: "EUR" },
-//   { destinationIata: "CUN", price: "275.74", currency: "EUR" },
-//   { destinationIata: "BKK", price: "400.01", currency: "EUR" },
-//   { destinationIata: "LAX", price: "451.41", currency: "EUR" },
-// ];
 let cheapestFlightDestinations = [];
 let locations = {};
-// let originIATA;
 
 const getCheapestFlightDestinations = async () => {
 	try {
-		console.log("making an api request...");
+		console.log("Making an api request...");
+		
 		const response = await amadeus.shopping.flightDestinations.get({
 			origin: "MAD",
 		});
 
-		console.log("passou");
-
 		const handledDestinations = await handleCheapestFlightDestinations(
 			response
 		);
+
 		cheapestFlightDestinations = handledDestinations;
-		console.log("the cheapest destinations to go to have been set!");
-		console.log(cheapestFlightDestinations);
+		console.log("The cheapest destinations array have been set!");
 	} catch (err) {
 		console.error(err);
 	}
@@ -111,6 +92,7 @@ const queueRecommendation = (msg) => {
 			channel.assertQueue(queue, {
 				durable: true,
 			});
+
 			channel.sendToQueue(queue, Buffer.from(msg), {
 				persistent: true,
 			});
@@ -123,23 +105,33 @@ const queueRecommendation = (msg) => {
 	});
 };
 
+const sendFlightRecommendation = async () => {
+	await getCheapestFlightDestinations();
+	
+	if (cheapestFlightDestinations.length && Object.keys(locations).length) {
+		setDestinationCountryCode();
+		sendRecommendationsToQueue();
+	}
+}
+
 const Main = async () => {
 	try {
 		await processLineByLine("./airports.csv", (line) => {
-			if (line?.iata_code) {
-				location[line?.iata_code] = {
-					countryCode: line.iso_country,
-					municipality: line.municipality,
+			const [name, iso_country,municipality,iata_code] = line.split(",")
+			if (iata_code) {
+				locations[iata_code] = {
+					countryCode: iso_country,
+					municipality: municipality,
 				};
 			}
 		});
-		await getCheapestFlightDestinations();
-		if (cheapestFlightDestinations.length && locations.length) {
-			setDestinationCountryCode();
-			sendRecommendationsToQueue();
-		}
+
+		var interval = setInterval( async function() {
+			await sendFlightRecommendation()
+		},15000);
+
 	} catch (err) {
-		console.error(err);
+		console.error(err.statusCode);
 	}
 };
 
