@@ -7,11 +7,17 @@ const express = require("express");
 const cors = require("cors");
 const amqp = require("amqplib/callback_api");
 const Amadeus = require("amadeus");
-const fs = require("fs");
-const readline = require("readline");
+// const fs = require("fs");
+// const readline = require("readline");
 const app = express();
 const axios = require("axios").default;
-const { raw } = require("express");
+const {
+  getPastDate,
+  calculateContaminationRate,
+  processLineByLine,
+} = require("./utils");
+
+const { queueRecommendation } = require("./rabbit_utils");
 
 app.use(express.json());
 app.use(cors());
@@ -21,29 +27,21 @@ const covidApi = "https://corona.lmao.ninja/v2/historical";
 
 //TIRAR VARIÁVEIS GLOBAIS
 let cheapestFlightDestinations = [];
-let locations = {};
+let countriesByIata = {};
 let covidData = [];
 let days = 90;
+
+const amadeus = new Amadeus({
+  clientId: AMADEUS_CLIENT_ID,
+  clientSecret: AMADEUS_CLIENT_SECRET,
+});
 
 app.post("/", function (req, res) {
   const iata = req.body.iata_from;
 
-  Main(iata);
+  main(iata);
   res.sendStatus(200);
 });
-
-const getDate = (days) => {
-  const date = new Date();
-  date.setDate(date.getDate() - days);
-  let formattedDate =
-    date.getMonth() +
-    1 +
-    "/" +
-    date.getDate() +
-    "/" +
-    date.getFullYear().toString().substr(-2);
-  return formattedDate;
-};
 
 const getCovidHistoricalData = async (countriesName) => {
   if (!covidData.length) {
@@ -60,9 +58,9 @@ const getCovidHistoricalData = async (countriesName) => {
 
   covidData.forEach((countryObject, index) => {
     let cases_list = countryObject.timeline.cases;
-    cheapestFlightDestinations[index].cases = cases_list[getDate(days)];
+    cheapestFlightDestinations[index].cases = cases_list[getPastDate(days)];
     cheapestFlightDestinations[index].contamination_rate =
-      calculate_contamination_rate(days, cases_list);
+      calculateContaminationRate(days, cases_list);
     cheapestFlightDestinations[index].country_name = countryObject.country;
     cheapestFlightDestinations[
       index
@@ -70,24 +68,6 @@ const getCovidHistoricalData = async (countriesName) => {
   });
 
   days -= 1;
-};
-
-const amadeus = new Amadeus({
-  clientId: AMADEUS_CLIENT_ID,
-  clientSecret: AMADEUS_CLIENT_SECRET,
-});
-
-const calculate_contamination_rate = (days, cases_list) => {
-  // Verificar se o dia anterior existe
-  if (days == 90) {
-    return 0;
-  } else {
-    const initial_value = cases_list[getDate(days + 1)];
-    const final_value = cases_list[getDate(days)];
-    const contamination_rate = (final_value - initial_value) / initial_value;
-
-    return Math.round(contamination_rate * 10000) / 10000;
-  }
 };
 
 const getCheapestFlightDestinations = async (iata) => {
@@ -120,21 +100,11 @@ const handleCheapestFlightDestinations = (response) => {
   }));
 };
 
-const processLineByLine = async (path, lineCallback) => {
-  const fileStream = fs.createReadStream(path);
-  const rl = readline.createInterface({
-    input: fileStream,
-    crlfDelay: Infinity,
-  });
-
-  rl.on("line", await lineCallback);
-};
-
 const setDestinationCountryCode = () => {
   const rawFlightDestinations = cheapestFlightDestinations.map(
     (destination) => ({
       ...destination,
-      countryCode: locations?.[destination.destinationIata]?.countryCode,
+      countryCode: countriesByIata?.[destination.destinationIata]?.countryCode,
     })
   );
 
@@ -152,44 +122,19 @@ const setDestinationCountryCode = () => {
 };
 
 const sendRecommendationsToQueue = () => {
-  cheapestFlightDestinations.forEach((destination) => {
-    const bufferedMessage = Buffer.from(JSON.stringify(destination));
-    queueRecommendation(bufferedMessage);
-  });
-};
-
-const queueRecommendation = (msg) => {
-  amqp.connect("amqp://localhost", function (error0, connection) {
-    if (error0) {
-      throw error0;
-    }
-    connection.createChannel(function (error1, channel) {
-      if (error1) {
-        throw error1;
-      }
-
-      let queue = "travel_recommendation_queue";
-
-      channel.assertQueue(queue, {
-        durable: true,
-      });
-
-      channel.sendToQueue(queue, Buffer.from(msg), {
-        persistent: true,
-      });
-      console.log(" [x] Sent '%s' to '%s'", msg, queue);
-    });
-
-    setTimeout(function () {
-      connection.close();
-    }, 500);
-  });
+  const bufferedMessage = Buffer.from(
+    JSON.stringify(cheapestFlightDestinations)
+  );
+  queueRecommendation(bufferedMessage);
 };
 
 const sendFlightRecommendation = async (iata) => {
   await getCheapestFlightDestinations(iata);
 
-  if (cheapestFlightDestinations.length && Object.keys(locations).length) {
+  if (
+    cheapestFlightDestinations.length &&
+    Object.keys(countriesByIata).length
+  ) {
     setDestinationCountryCode();
     const countriesIso = cheapestFlightDestinations
       .map((destination) => {
@@ -202,22 +147,17 @@ const sendFlightRecommendation = async (iata) => {
   }
 };
 
-const Main = async (iata) => {
+const main = async (iata) => {
   try {
     await processLineByLine("./airports.csv", (line) => {
-      const [name, iso_country, municipality, iata_code] = line.split(",");
-      if (iata_code) {
-        locations[iata_code] = {
-          countryCode: iso_country,
-          municipality: municipality,
-        };
-      }
+      const [, iso_country, , iata_code] = line.split(",");
+      countriesByIata[iata_code] = iso_country;
     });
 
-    var interval = setInterval(async function () {
+    setInterval(async function () {
       await sendFlightRecommendation(iata);
     }, 15000);
   } catch (err) {
-    console.error(err.statusCode);
+    console.error(err);
   }
 };
