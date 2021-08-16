@@ -4,6 +4,7 @@ const envVariables = process.env;
 const { AMADEUS_CLIENT_ID, AMADEUS_CLIENT_SECRET, PORT } = envVariables;
 
 const express = require("express");
+const cors = require("cors");
 const amqp = require("amqplib/callback_api");
 const Amadeus = require("amadeus");
 const fs = require("fs");
@@ -13,6 +14,7 @@ const axios = require("axios").default;
 const { raw } = require("express");
 
 app.use(express.json());
+app.use(cors());
 app.listen(PORT, () => console.log("Server started at %s", PORT));
 
 const covidApi = "https://corona.lmao.ninja/v2/historical";
@@ -21,45 +23,53 @@ const covidApi = "https://corona.lmao.ninja/v2/historical";
 let cheapestFlightDestinations = [];
 let locations = {};
 let covidData = [];
-let days = 90; 
+let days = 90;
 
-app.post("/", function(req, res) {
-	const iata = req.body.iata_from
+app.post("/", function (req, res) {
+  const iata = req.body.iata_from;
 
-	Main(iata);
-	res.sendStatus(200)
-})
-
+  Main(iata);
+  res.sendStatus(200);
+});
 
 const getDate = (days) => {
-	const date = new Date()
-	date.setDate(date.getDate() - days)
-	let formattedDate = (date.getMonth()+1)+'/'+date.getDate()+'/'+date.getFullYear().toString().substr(-2)
-	return formattedDate
-}
+  const date = new Date();
+  date.setDate(date.getDate() - days);
+  let formattedDate =
+    date.getMonth() +
+    1 +
+    "/" +
+    date.getDate() +
+    "/" +
+    date.getFullYear().toString().substr(-2);
+  return formattedDate;
+};
 
 const getCovidHistoricalData = async (countriesName) => {
-	if (!covidData.length) {
-		await axios({
-			method: "get",
-			url: `${covidApi}/${countriesName}`,
-			params: {
-				lastdays: 90,
-			},
-		}).then(function (response) {
-				covidData = response.data
-		});
-	}
+  if (!covidData.length) {
+    await axios({
+      method: "get",
+      url: `${covidApi}/${countriesName}`,
+      params: {
+        lastdays: 90,
+      },
+    }).then(function (response) {
+      covidData = response.data;
+    });
+  }
 
-	covidData.forEach((countryObject, index) => {
-		let cases_list = countryObject.timeline.cases
-		cheapestFlightDestinations[index].cases = cases_list[getDate(days)]
-		cheapestFlightDestinations[index].contamination_rate = calculate_contamination_rate(days, cases_list)
-		cheapestFlightDestinations[index].country_name = countryObject.country
-		cheapestFlightDestinations[index].flag_link = `https://www.countryflags.io/${cheapestFlightDestinations[index].countryCode}/flat/64.png`
-	})
+  covidData.forEach((countryObject, index) => {
+    let cases_list = countryObject.timeline.cases;
+    cheapestFlightDestinations[index].cases = cases_list[getDate(days)];
+    cheapestFlightDestinations[index].contamination_rate =
+      calculate_contamination_rate(days, cases_list);
+    cheapestFlightDestinations[index].country_name = countryObject.country;
+    cheapestFlightDestinations[
+      index
+    ].flag_link = `https://www.countryflags.io/${cheapestFlightDestinations[index].countryCode}/flat/64.png`;
+  });
 
-	days -= 1
+  days -= 1;
 };
 
 const amadeus = new Amadeus({
@@ -68,24 +78,24 @@ const amadeus = new Amadeus({
 });
 
 const calculate_contamination_rate = (days, cases_list) => {
-	// Verificar se o dia anterior existe
-	if (days == 90) {
-		return 0
-	} else {
-		const initial_value = cases_list[getDate(days+1)]
-		const final_value = cases_list[getDate(days)]
-		const contamination_rate = (final_value - initial_value) / initial_value
-	
-		return Math.round(contamination_rate * 10000) / 10000
-	}
-}
+  // Verificar se o dia anterior existe
+  if (days == 90) {
+    return 0;
+  } else {
+    const initial_value = cases_list[getDate(days + 1)];
+    const final_value = cases_list[getDate(days)];
+    const contamination_rate = (final_value - initial_value) / initial_value;
+
+    return Math.round(contamination_rate * 10000) / 10000;
+  }
+};
 
 const getCheapestFlightDestinations = async (iata) => {
   try {
     console.log("Making an api request...");
 
     const response = await amadeus.shopping.flightDestinations.get({
-      origin: iata ?? "REC",
+      origin: iata ?? "BSB",
     });
 
     const handledDestinations = await handleCheapestFlightDestinations(
@@ -187,7 +197,7 @@ const sendFlightRecommendation = async (iata) => {
       })
       .join(",");
 
-    getCovidHistoricalData(countriesIso);
+    await getCovidHistoricalData(countriesIso);
     sendRecommendationsToQueue();
   }
 };
@@ -211,5 +221,3 @@ const Main = async (iata) => {
     console.error(err.statusCode);
   }
 };
-
-
