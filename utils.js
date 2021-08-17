@@ -28,14 +28,12 @@ const getPastDate = (days) => {
  * @return {[Number]} Covid19 contamination rate
  */
 const calculateContaminationRate = (days, casesList) => {
-  // Verificar se o dia anterior existe
   if (days == 90) {
     return 0;
   } else {
     const initial_value = casesList[getPastDate(days + 1)];
     const final_value = casesList[getPastDate(days)];
     const contamination_rate = (final_value - initial_value) / initial_value;
-
     return Math.round(contamination_rate * 10000) / 10000;
   }
 };

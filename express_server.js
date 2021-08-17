@@ -2,13 +2,11 @@ require("dotenv").config();
 
 const envVariables = process.env;
 const { AMADEUS_CLIENT_ID, AMADEUS_CLIENT_SECRET, PORT } = envVariables;
-
+const countries = require("./countries.json")
 const express = require("express");
 const cors = require("cors");
 const amqp = require("amqplib/callback_api");
 const Amadeus = require("amadeus");
-// const fs = require("fs");
-// const readline = require("readline");
 const app = express();
 const axios = require("axios").default;
 const {
@@ -16,7 +14,6 @@ const {
   calculateContaminationRate,
   processLineByLine,
 } = require("./utils");
-
 const { queueRecommendation } = require("./rabbit_utils");
 
 app.use(express.json());
@@ -25,67 +22,50 @@ app.listen(PORT, () => console.log("Server started at %s", PORT));
 
 const covidApi = "https://corona.lmao.ninja/v2/historical";
 
-//TIRAR VARIÁVEIS GLOBAIS
-let cheapestFlightDestinations = [];
 let countriesByIata = {};
 let covidData = [];
-let days = 90;
 
 const amadeus = new Amadeus({
   clientId: AMADEUS_CLIENT_ID,
   clientSecret: AMADEUS_CLIENT_SECRET,
 });
 
-app.post("/", function (req, res) {
-  const iata = req.body.iata_from;
+app.get("/countries", async function (req, res) {
+  const iata = req.query.iata
+  const cheapestFlight = await getCheapestFlightDestinations(iata);
+  const cheapestFlightWithCountryCode = setDestinationCountryCode(cheapestFlight)
+  const response = JSON.stringify(cheapestFlightWithCountryCode)
 
-  main(iata);
-  res.sendStatus(200);
+  res.status(200).send(response)
 });
 
-const getCovidHistoricalData = async (countriesName) => {
-  if (!covidData.length) {
-    await axios({
-      method: "get",
-      url: `${covidApi}/${countriesName}`,
-      params: {
-        lastdays: 90,
-      },
-    }).then(function (response) {
-      covidData = response.data;
-    });
-  }
-
-  covidData.forEach((countryObject, index) => {
-    let cases_list = countryObject.timeline.cases;
-    cheapestFlightDestinations[index].cases = cases_list[getPastDate(days)];
-    cheapestFlightDestinations[index].contamination_rate =
-      calculateContaminationRate(days, cases_list);
-    cheapestFlightDestinations[index].country_name = countryObject.country;
-    cheapestFlightDestinations[
-      index
-    ].flag_link = `https://www.countryflags.io/${cheapestFlightDestinations[index].countryCode}/flat/64.png`;
+const getCovidHistoricalData = async (days) => {
+  await axios({
+    method: "get",
+    url: `${covidApi}`,
+    params: {
+      lastdays: 90,
+    },
+  }).then((response) => {
+    covidData = response.data
+    sendCovidData(days)
   });
-
-  days -= 1;
 };
 
 const getCheapestFlightDestinations = async (iata) => {
   try {
-    console.log("Making an api request...");
-
     const response = await amadeus.shopping.flightDestinations.get({
-      origin: iata ?? "BSB",
+      origin: iata,
     });
 
     const handledDestinations = await handleCheapestFlightDestinations(
       response
     );
 
-    cheapestFlightDestinations = handledDestinations;
-    console.log("The cheapest destinations array have been set!");
+    return handledDestinations;
   } catch (err) {
-    console.error(err);
+    console.log(err)
+    getCheapestFlightDestinations(iata); //Ver isso
   }
 };
 
@@ -100,11 +80,15 @@ const handleCheapestFlightDestinations = (response) => {
   }));
 };
 
-const setDestinationCountryCode = () => {
-  const rawFlightDestinations = cheapestFlightDestinations.map(
+const setDestinationCountryCode = (cheapestFlights) => {
+  const rawFlightDestinations = cheapestFlights.map(
     (destination) => ({
       ...destination,
-      countryCode: countriesByIata?.[destination.destinationIata]?.countryCode,
+      countryCode: countriesByIata[destination.destinationIata],
+      flag_link: `https://www.countryflags.io/${countriesByIata[destination.destinationIata]}/flat/64.png`,
+      countryName: countries.find((element) => { 
+        return element.code == countriesByIata[destination.destinationIata]
+      }).name,
     })
   );
 
@@ -118,46 +102,63 @@ const setDestinationCountryCode = () => {
     }
   });
 
-  cheapestFlightDestinations = finalDestinationsList;
+
+
+  return finalDestinationsList;
 };
 
-const sendRecommendationsToQueue = () => {
+const sendRecommendationsToQueue = (data) => {
   const bufferedMessage = Buffer.from(
-    JSON.stringify(cheapestFlightDestinations)
+    JSON.stringify(data)
   );
   queueRecommendation(bufferedMessage);
 };
 
-const sendFlightRecommendation = async (iata) => {
-  await getCheapestFlightDestinations(iata);
-
-  if (
-    cheapestFlightDestinations.length &&
-    Object.keys(countriesByIata).length
-  ) {
-    setDestinationCountryCode();
-    const countriesIso = cheapestFlightDestinations
-      .map((destination) => {
-        return destination.countryCode;
-      })
-      .join(",");
-
-    await getCovidHistoricalData(countriesIso);
-    sendRecommendationsToQueue();
-  }
+const sendCovidData = (days) => {
+    const formattedData = formatCovidData(covidData, days)
+    sendRecommendationsToQueue(formattedData);
 };
 
-const main = async (iata) => {
+const formatCovidData = (data, days) => {
+  let formatted = {}
+
+  data.forEach((country) => {
+    formatted[country.country] = {
+      cases: country.timeline.cases[getPastDate(days)],
+      contaminationRate: calculateContaminationRate(days, country.timeline.cases)
+    }
+  })
+
+  return formatted
+}
+
+const main = async () => {
+  let days = 90
+
   try {
     await processLineByLine("./airports.csv", (line) => {
       const [, iso_country, , iata_code] = line.split(",");
       countriesByIata[iata_code] = iso_country;
     });
 
-    setInterval(async function () {
-      await sendFlightRecommendation(iata);
+    setInterval(async () => {
+      if (days <= 0) {
+        days = 90
+      } else {
+        days -= 1
+      }
+      console.log(days)
+      if (covidData.length) {
+        sendCovidData(days)
+      } else {
+        await getCovidHistoricalData(days);
+      }
+      
     }, 15000);
+
   } catch (err) {
     console.error(err);
   }
 };
+
+main()
