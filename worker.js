@@ -1,27 +1,43 @@
 const WebSocket = require('ws');
 let amqp = require('amqplib/callback_api');
-
-
 const port = 5000;
+const axios = require("axios").default;
 const wss = new WebSocket.Server({ port });
 
-let messages = [];
-let myChannel;
+let clientsWithCountries = []
 
 wss.on('connection', function connection(ws) {
   ws.on('error', console.error);
   
-  ws.on('message', function incoming(data) {
-     console.log(data.toString());
-    // for(let i = 0; i < messages.length; i++) {
-    //   if (Buffer.compare(messages[i].content, data) == 0) {
-    //     myChannel.ack(messages[i]);
-    //     messages.splice(i, 1);
-    //     console.log("Pedido autorizado.");
-    //     break;
-    //   }
-    // }
+  ws.on('message', async (data) => {
+    try {
+      await axios({
+        method: "get",
+        url: "http://localhost:3333/countries",
+        params: {
+          iata: data.toString(),
+        },
+      }).then((response) => {
+        clientsWithCountries.push({
+          connection: ws, 
+          countries: response.data
+        })
+      });
+    } catch(e) {
+      console.log(e)
+    }
+
   });
+
+  ws.on('close', (e) => {
+    const connectionIndex = clientsWithCountries.findIndex((element) => {
+      return element.connection == ws
+    })
+
+    if (connectionIndex > -1) {
+      clientsWithCountries.splice(connectionIndex, 1)
+    }
+  })
 })
 
 
@@ -43,16 +59,33 @@ amqp.connect('amqp://localhost', (error0, connection) => {
     console.log(" [*] Waiting for messages in %s. To exit press CTRL+C", queue);
     
     channel.consume(queue, msg => {
-      console.log(" [x] Received %s", msg.content.toString());
+      const converter = new TextDecoder("utf-8")
+      const convertedData = converter.decode(msg.content)
+      const covidData = JSON.parse(convertedData)
 
-      wss.clients.forEach(client => {
-        if (client.readyState === WebSocket.OPEN) {
-          client.send(msg.content);
-          channel.ack(msg)
+
+      clientsWithCountries.forEach(client => {
+        if (client.connection.readyState === WebSocket.OPEN) {
+          try {
+            client.countries.forEach((country) => {
+              country.cases = covidData[country.countryName].cases
+              country.contaminationRate = covidData[country.countryName].contaminationRate
+            })
+          } catch (e) {
+            console.log(e)
+          }
+
+          const bufferedMessage = Buffer.from(
+            JSON.stringify(client.countries)
+          );
+
+          client.connection.send(bufferedMessage);
         }
       })
     }, {
-      noAck: false
+      noAck: true
     });
   });
 });
+
+
